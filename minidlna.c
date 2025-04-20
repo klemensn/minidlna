@@ -61,6 +61,7 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <fts.h>
 #include <time.h>
 #include <signal.h>
 #include <errno.h>
@@ -340,11 +341,66 @@ open_db(sqlite3 **sq3)
 	return new_db;
 }
 
+/* simplified version of OpenBSD's rm(1) -rf */
+static int
+rm_tree(char * const *argv)
+{
+	FTS *fts;
+	FTSENT *p;
+	int error = 0;
+
+	if ((fts = fts_open(argv, FTS_PHYSICAL | FTS_NOSTAT, NULL)) == NULL)
+		DPRINTF(E_ERROR, L_GENERAL, "fts_open: %s\n", strerror(errno));
+	while ((p = fts_read(fts)) != NULL) {
+		switch (p->fts_info) {
+		case FTS_DNR:
+			if (p->fts_errno != ENOENT) {
+				DPRINTF(E_WARN, L_GENERAL, "fts_read: %s: %s\n", p->fts_path, strerror(p->fts_errno));
+				error = 1;
+			}
+			continue;
+		case FTS_ERR:
+			DPRINTF(E_FATAL, L_GENERAL, "fts_read: %s: %s\n", p->fts_path, strerror(p->fts_errno));
+		case FTS_D:
+			continue;
+		}
+
+		switch (p->fts_info) {
+		case FTS_DP:
+		case FTS_DNR:
+			if (!rmdir(p->fts_accpath) || errno == ENOENT)
+				continue;
+			break;
+		default:
+			if (!unlink(p->fts_accpath) || errno == ENOENT)
+				continue;
+		}
+		DPRINTF(E_WARN, L_GENERAL, "rmdir/unlink: %s: %s\n", p->fts_path, strerror(errno));
+		error = 1;
+	}
+	if (errno)
+		DPRINTF(E_ERROR, L_GENERAL, "fts_read: %s\n", strerror(errno));
+	fts_close(fts);
+	return error;
+}
+
+static void
+clean_cache(void)
+{
+	size_t sz = PATH_MAX;
+	char files_db[sz], art_cache[sz];
+	char * const paths[] = { files_db, art_cache, NULL };
+
+	if (snprintf(files_db,  sz, "%s/files.db",  db_path) >= sz ||
+	    snprintf(art_cache, sz, "%s/art_cache", db_path) >= sz ||
+	    rm_tree(paths) != 0)
+		DPRINTF(E_FATAL, L_GENERAL, "Failed to clean old file cache!  Exiting...\n");
+}
+
 static void
 check_db(sqlite3 *db, int new_db, pid_t *scanner_pid)
 {
 	struct media_dir_s *media_path = NULL;
-	char cmd[PATH_MAX*2];
 	char **result;
 	int i, rows = 0;
 	int ret;
@@ -401,9 +457,7 @@ rescan:
 				ret, DB_VERSION);
 		sqlite3_close(db);
 
-		snprintf(cmd, sizeof(cmd), "rm -rf %s/files.db %s/art_cache", db_path, db_path);
-		if (system(cmd) != 0)
-			DPRINTF(E_FATAL, L_GENERAL, "Failed to clean old file cache!  Exiting...\n");
+		clean_cache();
 
 		open_db(&db);
 		if (CreateDatabase() != 0)
@@ -910,9 +964,7 @@ init(int argc, char **argv)
 			SETFLAG(RESCAN_MASK);
 			break;
 		case 'R':
-			snprintf(buf, sizeof(buf), "rm -rf %s/files.db %s/art_cache", db_path, db_path);
-			if (system(buf) != 0)
-				DPRINTF(E_FATAL, L_GENERAL, "Failed to clean old file cache %s. EXITING\n", db_path);
+			clean_cache();
 			break;
 		case 'u':
 			if (i+1 != argc)
