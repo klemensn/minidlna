@@ -1183,6 +1183,35 @@ main(int argc, char **argv)
 		return 1;
 	init_nls();
 
+#ifdef __OpenBSD__
+	struct media_dir_s *media_dir;
+
+	for (media_dir = media_dirs; media_dir; media_dir = media_dir->next)
+		if (unveil(media_dir->path, "r") == -1)
+			DPRINTF(E_FATAL, L_GENERAL, "unveil: %s: %s\n", media_dir->path, strerror(errno));
+
+	struct {
+		const char *path;
+		const char *perms;
+	} uvs[] = {
+		{ db_path,     "rwc" },
+		{ log_path,    "rwc" },
+		{ pidfilename, "rwc" },
+		{ NULL,        NULL  }
+	}, *uv = uvs;
+
+	for (; uv->path && uv->perms; uv++) {
+		if (!uv->path[0])
+			continue;
+		DPRINTF(E_INFO, L_GENERAL, "unveil: '%s'\n", uv->path);
+		if (unveil(uv->path, uv->perms) == -1)
+			DPRINTF(E_FATAL, L_GENERAL, "unveil: %s: %s\n", uv->path, strerror(errno));
+	}
+
+	if (pledge("stdio rpath wpath cpath inet mcast fattr flock unix proc", NULL) == -1)
+		DPRINTF(E_FATAL, L_GENERAL, "pledge: %s\n", strerror(errno));
+#endif
+
 	DPRINTF(E_WARN, L_GENERAL, "Starting " SERVER_NAME " version " MINIDLNA_VERSION ".\n");
 	if (sqlite3_libversion_number() < 3005001)
 	{
